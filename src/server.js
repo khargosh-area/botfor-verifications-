@@ -1,6 +1,8 @@
 require("dotenv").config();
 
 const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
 const express = require("express");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
@@ -28,7 +30,9 @@ if (process.env.STATE_SECRET.length < 32) {
 const PORT = Number(process.env.PORT || 3000);
 const PARTNER_ROLE_ID = process.env.PARTNER_ROLE_ID || "";
 const OWNER_DISCORD_USER_ID = process.env.OWNER_DISCORD_USER_ID || "";
-const db = new Database(process.env.DATABASE_PATH || "./data/rabbit-ranks.sqlite");
+const databasePath = process.env.DATABASE_PATH || "./data/rabbit-ranks.sqlite";
+fs.mkdirSync(path.dirname(path.resolve(databasePath)), { recursive: true });
+const db = new Database(databasePath);
 db.pragma("journal_mode = WAL");
 db.exec(`
   CREATE TABLE IF NOT EXISTS links (
@@ -68,7 +72,7 @@ function validAccountId(value) {
   return typeof value === "string" && /^[a-zA-Z0-9_-]{16,80}$/.test(value);
 }
 function rankFor(member) {
-  if (member.id === OWNER_DISCORD_USER_ID && OWNER_DISCORD_USER_ID) {
+  if (OWNER_DISCORD_USER_ID && member.id === OWNER_DISCORD_USER_ID) {
     return { rank: "owner", color: "#FF0000", badge: "red" };
   }
   if (PARTNER_ROLE_ID && member.roles.cache.has(PARTNER_ROLE_ID)) {
@@ -82,7 +86,6 @@ function rankFor(member) {
 
 app.get("/health", (_req, res) => res.json({ ok: true, service: "rabbit-launcher-verification" }));
 
-// The launcher generates a random account ID and opens this URL in a browser.
 app.get("/connect/:accountId", (req, res) => {
   const accountId = req.params.accountId;
   if (!validAccountId(accountId)) return res.status(400).send("Invalid launcher account ID.");
@@ -120,10 +123,7 @@ app.get("/oauth/callback", async (req, res) => {
     if (!userResponse.ok) throw new Error("Discord account lookup failed");
     const user = await userResponse.json();
 
-    const previous = db.prepare("SELECT account_id FROM links WHERE discord_user_id = ?").get(user.id);
-    if (previous && previous.account_id !== state.accountId) {
-      db.prepare("DELETE FROM links WHERE discord_user_id = ?").run(user.id);
-    }
+    db.prepare("DELETE FROM links WHERE discord_user_id = ? AND account_id != ?").run(user.id, state.accountId);
     db.prepare(`INSERT INTO links (account_id, discord_user_id) VALUES (?, ?)
       ON CONFLICT(account_id) DO UPDATE SET discord_user_id = excluded.discord_user_id, linked_at = CURRENT_TIMESTAMP`)
       .run(state.accountId, user.id);
